@@ -159,6 +159,58 @@ def test_video(video_path, output_dir='output_single'):
             keys3.append(key3)
             vals3.append(val3)
         
+        # Второй проход по первым кадрам с attention для улучшения качества
+        if T > opt.save_freq:
+            for t in range(min(opt.save_freq, T)):
+                print(f'Улучшение кадра {t+1}/{opt.save_freq}', end='\r')
+                
+                tmp_key_local = torch.stack(keys[-opt.save_freq:])
+                tmp_val_local = torch.stack(vals[-opt.save_freq:])
+                tmp_key_local3 = torch.stack(keys3[-opt.save_freq:])
+                tmp_val_local3 = torch.stack(vals3[-opt.save_freq:])
+                
+                shuffle_keys = keys.copy()
+                shuffle_vals = vals.copy()
+                shuffle(shuffle_keys)
+                shuffle(shuffle_vals)
+                tmp_key_global = torch.stack(shuffle_keys[-opt.save_freq:])
+                tmp_val_global = torch.stack(shuffle_vals[-opt.save_freq:])
+                
+                shuffle_keys3 = keys3.copy()
+                shuffle_vals3 = vals3.copy()
+                shuffle(shuffle_keys3)
+                shuffle(shuffle_vals3)
+                tmp_key_global3 = torch.stack(shuffle_keys3[-opt.save_freq:])
+                tmp_val_global3 = torch.stack(shuffle_vals3[-opt.save_freq:])
+                
+                tmp_key_local = att(f=tmp_key_local, tag='att_in_local')
+                tmp_val_local = att(f=tmp_val_local, tag='att_out_local')
+                tmp_key_global = att(f=tmp_key_global, tag='att_in_global')
+                tmp_val_global = att(f=tmp_val_global, tag='att_out_global')
+                
+                tmp_key_local3 = att(f=tmp_key_local3, tag='att_in_local3')
+                tmp_val_local3 = att(f=tmp_val_local3, tag='att_out_local3')
+                tmp_key_global3 = att(f=tmp_key_global3, tag='att_in_global3')
+                tmp_val_global3 = att(f=tmp_val_global3, tag='att_out_global3')
+                
+                tmp_key = tmp_key_local + tmp_key_global
+                tmp_val = tmp_val_local + tmp_val_global
+                tmp_key3 = tmp_key_local3 + tmp_key_global3
+                tmp_val3 = tmp_val_local3 + tmp_val_global3
+                
+                logits, _, _ = net(
+                    frame=frames_tensor[t:t+1, :, :, :],
+                    keys=tmp_key,
+                    values=tmp_val,
+                    keys3=tmp_key3,
+                    values3=tmp_val3,
+                    num_objects=num_objects
+                )
+                
+                out = torch.softmax(logits, dim=1)
+                pred[t] = out
+            print()
+        
         # Остальные кадры
         for t in range(opt.save_freq, T):
             print(f'Кадр {t+1}/{T}', end='\r')
