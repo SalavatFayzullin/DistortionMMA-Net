@@ -89,6 +89,118 @@ def save_masks(pred, output_dir, video_name, original_size, palette=None):
         else:
             cv2.imwrite(output_path, rescale_mask)
 
+def apply_hough_lines(pred, output_dir, video_name, original_size, original_frames):
+    """Применение Hough Line Transform для получения уравнений линий из масок MMA-NET"""
+    hough_output_dir = os.path.join(output_dir, video_name + '_hough')
+    equations_dir = os.path.join(output_dir, video_name + '_equations')
+    os.makedirs(hough_output_dir, exist_ok=True)
+    os.makedirs(equations_dir, exist_ok=True)
+    
+    h, w = original_size
+    T = pred.shape[0]
+    th, tw = pred.shape[2:]
+    factor = min(th / h, tw / w)
+    sh, sw = int(factor * h), int(factor * w)
+    
+    pad_l = (tw - sw) // 2
+    pad_t = (th - sh) // 2
+    
+    # Цвета для разных линий
+    line_colors = [
+        (255, 0, 0),      # Красный
+        (0, 255, 0),      # Зеленый
+        (0, 0, 255),      # Синий
+        (255, 255, 0),    # Желтый
+        (255, 0, 255),    # Пурпурный
+        (0, 255, 255),    # Голубой
+        (255, 128, 0),    # Оранжевый
+        (128, 0, 255),    # Фиолетовый
+    ]
+    
+    for t in range(T):
+        m = pred[t, :, pad_t:pad_t + sh, pad_l:pad_l + sw]
+        m = m.transpose((1, 2, 0))
+        rescale_mask = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+        rescale_mask = rescale_mask.argmax(axis=2).astype(np.uint8)
+        
+        # Создаем чистое изображение для отрисовки только прямых
+        result_img = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        # Файл для сохранения уравнений
+        equations_file = os.path.join(equations_dir, f'{t:05d}_equations.txt')
+        
+        # Обрабатываем каждую линию отдельно
+        num_lanes = rescale_mask.max()
+        
+        with open(equations_file, 'w', encoding='utf-8') as f:
+            f.write(f'Кадр {t:05d} - Уравнения линий из MMA-NET масок\n')
+            f.write('=' * 60 + '\n\n')
+            
+            for lane_id in range(1, num_lanes + 1):
+                # Извлекаем маску для текущей линии (найденную MMA-NET)
+                lane_mask = (rescale_mask == lane_id).astype(np.uint8) * 255
+                
+                # Находим все точки этой линии
+                points = cv2.findNonZero(lane_mask)
+                
+                if points is None or len(points) < 10:
+                    f.write(f'Линия {lane_id}: недостаточно точек\n\n')
+                    continue
+                
+                # Преобразуем точки для fitLine
+                points = points.reshape(-1, 2)
+                
+                # Аппроксимируем линию методом наименьших квадратов
+                [vx, vy, x0, y0] = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01)
+                
+                # Вычисляем уравнение прямой
+                # Прямая задается как: (x - x0)/vx = (y - y0)/vy
+                # Преобразуем в y = kx + b
+                
+                if abs(vx) < 1e-6:  # Вертикальная линия
+                    equation = f'x = {x0[0]:.2f}'
+                    x1_draw, y1_draw = int(x0[0]), 0
+                    x2_draw, y2_draw = int(x0[0]), h - 1
+                else:
+                    k = vy[0] / vx[0]
+                    b = y0[0] - k * x0[0]
+                    equation = f'y = {k:.4f}x + {b:.2f}'
+                    
+                    # Находим точки пересечения с границами изображения
+                    x1_draw, y1_draw = 0, int(b)
+                    x2_draw, y2_draw = w - 1, int(k * (w - 1) + b)
+                    
+                    # Ограничиваем координаты границами изображения
+                    if y1_draw < 0:
+                        x1_draw = int(-b / k)
+                        y1_draw = 0
+                    elif y1_draw >= h:
+                        x1_draw = int((h - 1 - b) / k)
+                        y1_draw = h - 1
+                    
+                    if y2_draw < 0:
+                        x2_draw = int(-b / k)
+                        y2_draw = 0
+                    elif y2_draw >= h:
+                        x2_draw = int((h - 1 - b) / k)
+                        y2_draw = h - 1
+                
+                # Рисуем прямую на чистом изображении
+                color = line_colors[(lane_id - 1) % len(line_colors)]
+                cv2.line(result_img, (x1_draw, y1_draw), (x2_draw, y2_draw), color, 3)
+                
+                # Сохраняем уравнение
+                f.write(f'Линия {lane_id}:\n')
+                f.write(f'  Уравнение: {equation}\n')
+                f.write(f'  Точек в маске: {len(points)}\n')
+                f.write(f'  Направляющий вектор: ({vx[0]:.4f}, {vy[0]:.4f})\n')
+                f.write(f'  Точка на прямой: ({x0[0]:.2f}, {y0[0]:.2f})\n')
+                f.write('\n')
+        
+        # Сохраняем результат - изображение только с прямыми
+        output_path = os.path.join(hough_output_dir, f'{t:05d}_lines.jpg')
+        cv2.imwrite(output_path, result_img)
+
 def test_video(video_path, output_dir='output_single'):
     print(f'==> Обработка: {video_path}')
     
@@ -314,7 +426,13 @@ def test_video(video_path, output_dir='output_single'):
     
     save_masks(pred, output_dir, video_name, original_size, palette)
     
+    # Вычисляем уравнения линий и строим прямые
+    print('==> Вычисление уравнений линий...')
+    apply_hough_lines(pred, output_dir, video_name, original_size, frames)
+    
     print(f'==> Результаты сохранены: {output_dir}/{video_name}/')
+    print(f'==> Прямые линии: {output_dir}/{video_name}_hough/')
+    print(f'==> Уравнения линий: {output_dir}/{video_name}_equations/')
     print(f'==> Время обработки: {total_time:.2f}s')
     print(f'==> FPS: {fps:.2f}')
 
