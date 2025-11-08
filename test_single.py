@@ -4,6 +4,7 @@ import numpy as np
 import os
 import argparse
 import cv2
+import time
 from PIL import Image
 
 from libs.models.STM import STM
@@ -55,6 +56,23 @@ def save_masks(pred, output_dir, video_name, original_size, palette=None):
     pad_l = (tw - sw) // 2
     pad_t = (th - sh) // 2
     
+    # Создаем яркую палитру для линий
+    bright_palette = [0, 0, 0]  # Фон - черный
+    bright_colors = [
+        [255, 0, 0],      # Красный
+        [0, 255, 0],      # Зеленый
+        [0, 0, 255],      # Синий
+        [255, 255, 0],    # Желтый
+        [255, 0, 255],    # Пурпурный
+        [0, 255, 255],    # Голубой
+        [255, 128, 0],    # Оранжевый
+        [128, 0, 255],    # Фиолетовый
+    ]
+    for color in bright_colors:
+        bright_palette.extend(color)
+    # Заполняем остальные 247 цветов
+    bright_palette.extend([0] * (256 - len(bright_colors) - 1) * 3)
+    
     for t in range(T):
         m = pred[t, :, pad_t:pad_t + sh, pad_l:pad_l + sw]
         m = m.transpose((1, 2, 0))
@@ -65,8 +83,8 @@ def save_masks(pred, output_dir, video_name, original_size, palette=None):
         
         if opt.save_indexed_format:
             im = Image.fromarray(rescale_mask).convert('P')
-            if palette is not None:
-                im.putpalette(palette)
+            # Используем яркую палитру вместо оригинальной
+            im.putpalette(bright_palette)
             im.save(output_path, format='PNG')
         else:
             cv2.imwrite(output_path, rescale_mask)
@@ -131,6 +149,8 @@ def test_video(video_path, output_dir='output_single'):
     
     # Обработка
     print('==> Обработка кадров')
+    start_time = time.time()
+    
     with torch.no_grad():
         T, _, H, W = frames_tensor.shape
         num_objects = opt.max_object
@@ -160,7 +180,7 @@ def test_video(video_path, output_dir='output_single'):
             vals3.append(val3)
         
         # Второй проход по первым кадрам с attention для улучшения качества
-        if T > opt.save_freq:
+        if T >= opt.save_freq:
             for t in range(min(opt.save_freq, T)):
                 print(f'Улучшение кадра {t+1}/{opt.save_freq}', end='\r')
                 
@@ -282,6 +302,10 @@ def test_video(video_path, output_dir='output_single'):
         pred = torch.cat(pred, dim=0)
         pred = pred.cpu().numpy()
     
+    end_time = time.time()
+    total_time = end_time - start_time
+    fps = T / total_time
+    
     # Сохранение
     if os.path.isdir(video_path):
         video_name = os.path.basename(video_path.rstrip('/\\'))
@@ -291,6 +315,8 @@ def test_video(video_path, output_dir='output_single'):
     save_masks(pred, output_dir, video_name, original_size, palette)
     
     print(f'==> Результаты сохранены: {output_dir}/{video_name}/')
+    print(f'==> Время обработки: {total_time:.2f}s')
+    print(f'==> FPS: {fps:.2f}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
