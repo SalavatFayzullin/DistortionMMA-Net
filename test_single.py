@@ -89,6 +89,36 @@ def save_masks(pred, output_dir, video_name, original_size, palette=None):
         else:
             cv2.imwrite(output_path, rescale_mask)
 
+def find_intersection(line1, line2):
+    """Находит точку пересечения двух прямых
+    line1, line2: dict с ключами 'type', 'k', 'b' (для y=kx+b) или 'x' (для x=c)
+    Возвращает (x, y) или None если прямые параллельны или не пересекаются
+    """
+    if line1['type'] == 'vertical' and line2['type'] == 'vertical':
+        return None  # Параллельные вертикальные линии
+    
+    if line1['type'] == 'vertical':
+        x = line1['x']
+        y = line2['k'] * x + line2['b']
+        return (x, y)
+    
+    if line2['type'] == 'vertical':
+        x = line2['x']
+        y = line1['k'] * x + line1['b']
+        return (x, y)
+    
+    # Обе линии наклонные: y = k1*x + b1 и y = k2*x + b2
+    k1, b1 = line1['k'], line1['b']
+    k2, b2 = line2['k'], line2['b']
+    
+    if abs(k1 - k2) < 1e-6:
+        return None  # Параллельные линии
+    
+    x = (b2 - b1) / (k1 - k2)
+    y = k1 * x + b1
+    
+    return (x, y)
+
 def apply_hough_lines(pred, output_dir, video_name, original_size, original_frames):
     """Применение Hough Line Transform для получения уравнений линий из масок MMA-NET"""
     hough_output_dir = os.path.join(output_dir, video_name + '_hough')
@@ -132,6 +162,9 @@ def apply_hough_lines(pred, output_dir, video_name, original_size, original_fram
         # Обрабатываем каждую линию отдельно
         num_lanes = rescale_mask.max()
         
+        # Список для хранения параметров линий
+        lines_params = []
+        
         with open(equations_file, 'w', encoding='utf-8') as f:
             f.write(f'Кадр {t:05d} - Уравнения линий из MMA-NET масок\n')
             f.write('=' * 60 + '\n\n')
@@ -157,14 +190,18 @@ def apply_hough_lines(pred, output_dir, video_name, original_size, original_fram
                 # Прямая задается как: (x - x0)/vx = (y - y0)/vy
                 # Преобразуем в y = kx + b
                 
+                line_params = {}
+                
                 if abs(vx) < 1e-6:  # Вертикальная линия
                     equation = f'x = {x0[0]:.2f}'
                     x1_draw, y1_draw = int(x0[0]), 0
                     x2_draw, y2_draw = int(x0[0]), h - 1
+                    line_params = {'type': 'vertical', 'x': x0[0]}
                 else:
                     k = vy[0] / vx[0]
                     b = y0[0] - k * x0[0]
                     equation = f'y = {k:.4f}x + {b:.2f}'
+                    line_params = {'type': 'normal', 'k': k, 'b': b}
                     
                     # Находим точки пересечения с границами изображения
                     x1_draw, y1_draw = 0, int(b)
@@ -185,6 +222,8 @@ def apply_hough_lines(pred, output_dir, video_name, original_size, original_fram
                         x2_draw = int((h - 1 - b) / k)
                         y2_draw = h - 1
                 
+                lines_params.append(line_params)
+                
                 # Рисуем прямую на чистом изображении
                 color = line_colors[(lane_id - 1) % len(line_colors)]
                 cv2.line(result_img, (x1_draw, y1_draw), (x2_draw, y2_draw), color, 3)
@@ -196,6 +235,42 @@ def apply_hough_lines(pred, output_dir, video_name, original_size, original_fram
                 f.write(f'  Направляющий вектор: ({vx[0]:.4f}, {vy[0]:.4f})\n')
                 f.write(f'  Точка на прямой: ({x0[0]:.2f}, {y0[0]:.2f})\n')
                 f.write('\n')
+            
+            # Находим все пересечения
+            f.write('\n' + '=' * 60 + '\n')
+            f.write('ТОЧКИ ПЕРЕСЕЧЕНИЯ\n')
+            f.write('=' * 60 + '\n\n')
+            
+            intersections = []
+            for i in range(len(lines_params)):
+                for j in range(i + 1, len(lines_params)):
+                    intersection = find_intersection(lines_params[i], lines_params[j])
+                    if intersection is not None:
+                        x_int, y_int = intersection
+                        # Проверяем, что точка находится в разумных пределах (можно расширить границы)
+                        if -w <= x_int <= 2*w and -h <= y_int <= 2*h:
+                            intersections.append((x_int, y_int))
+                            f.write(f'Пересечение линий {i+1} и {j+1}: ({x_int:.2f}, {y_int:.2f})\n')
+            
+            # Вычисляем усредненную точку пересечения
+            if intersections:
+                avg_x = sum(x for x, y in intersections) / len(intersections)
+                avg_y = sum(y for x, y in intersections) / len(intersections)
+                
+                f.write(f'\nВсего пересечений: {len(intersections)}\n')
+                f.write(f'Усредненная точка схода: ({avg_x:.2f}, {avg_y:.2f})\n')
+                
+                # Рисуем все точки пересечения маленькими точками
+                for x_int, y_int in intersections:
+                    if 0 <= x_int < w and 0 <= y_int < h:
+                        cv2.circle(result_img, (int(x_int), int(y_int)), 3, (128, 128, 128), -1)
+                
+                # Рисуем усредненную точку большой яркой точкой
+                if 0 <= avg_x < w and 0 <= avg_y < h:
+                    cv2.circle(result_img, (int(avg_x), int(avg_y)), 8, (255, 255, 255), -1)
+                    cv2.circle(result_img, (int(avg_x), int(avg_y)), 10, (0, 255, 0), 2)
+            else:
+                f.write('\nТочек пересечения не найдено\n')
         
         # Сохраняем результат - изображение только с прямыми
         output_path = os.path.join(hough_output_dir, f'{t:05d}_lines.jpg')
