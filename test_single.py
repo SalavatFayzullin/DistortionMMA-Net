@@ -252,25 +252,68 @@ def apply_hough_lines(pred, output_dir, video_name, original_size, original_fram
                             intersections.append((x_int, y_int))
                             f.write(f'Пересечение линий {i+1} и {j+1}: ({x_int:.2f}, {y_int:.2f})\n')
             
-            # Вычисляем усредненную точку пересечения
-            if intersections:
-                avg_x = sum(x for x, y in intersections) / len(intersections)
-                avg_y = sum(y for x, y in intersections) / len(intersections)
+            # Вычисляем усредненную линию
+            f.write('\n' + '=' * 60 + '\n')
+            f.write('УСРЕДНЕННАЯ ЛИНИЯ\n')
+            f.write('=' * 60 + '\n\n')
+            
+            if len(lines_params) > 0:
+                # Разделяем линии на вертикальные и наклонные
+                vertical_lines = [lp for lp in lines_params if lp['type'] == 'vertical']
+                normal_lines = [lp for lp in lines_params if lp['type'] == 'normal']
                 
-                f.write(f'\nВсего пересечений: {len(intersections)}\n')
-                f.write(f'Усредненная точка схода: ({avg_x:.2f}, {avg_y:.2f})\n')
+                if len(vertical_lines) > len(normal_lines):
+                    # Если больше вертикальных линий, усредняем их
+                    avg_x = sum(lp['x'] for lp in vertical_lines) / len(vertical_lines)
+                    avg_equation = f'x = {avg_x:.2f}'
+                    avg_type = 'vertical'
+                    
+                    f.write(f'Усреднено {len(vertical_lines)} вертикальных линий\n')
+                    f.write(f'Уравнение усредненной линии: {avg_equation}\n')
+                    
+                    # Рисуем усредненную вертикальную линию
+                    cv2.line(result_img, (int(avg_x), 0), (int(avg_x), h-1), (255, 255, 255), 4)
+                    
+                elif len(normal_lines) > 0:
+                    # Усредняем наклонные линии
+                    avg_k = sum(lp['k'] for lp in normal_lines) / len(normal_lines)
+                    avg_b = sum(lp['b'] for lp in normal_lines) / len(normal_lines)
+                    avg_equation = f'y = {avg_k:.4f}x + {avg_b:.2f}'
+                    avg_type = 'normal'
+                    
+                    f.write(f'Усреднено {len(normal_lines)} наклонных линий\n')
+                    f.write(f'Уравнение усредненной линии: {avg_equation}\n')
+                    
+                    # Находим точки пересечения с границами изображения
+                    x1_avg, y1_avg = 0, int(avg_b)
+                    x2_avg, y2_avg = w - 1, int(avg_k * (w - 1) + avg_b)
+                    
+                    # Ограничиваем координаты границами изображения
+                    if y1_avg < 0:
+                        x1_avg = int(-avg_b / avg_k) if avg_k != 0 else 0
+                        y1_avg = 0
+                    elif y1_avg >= h:
+                        x1_avg = int((h - 1 - avg_b) / avg_k) if avg_k != 0 else 0
+                        y1_avg = h - 1
+                    
+                    if y2_avg < 0:
+                        x2_avg = int(-avg_b / avg_k) if avg_k != 0 else w - 1
+                        y2_avg = 0
+                    elif y2_avg >= h:
+                        x2_avg = int((h - 1 - avg_b) / avg_k) if avg_k != 0 else w - 1
+                        y2_avg = h - 1
+                    
+                    # Рисуем усредненную линию толстой белой линией
+                    cv2.line(result_img, (x1_avg, y1_avg), (x2_avg, y2_avg), (255, 255, 255), 4)
                 
-                # Рисуем все точки пересечения маленькими точками
-                for x_int, y_int in intersections:
-                    if 0 <= x_int < w and 0 <= y_int < h:
-                        cv2.circle(result_img, (int(x_int), int(y_int)), 3, (128, 128, 128), -1)
-                
-                # Рисуем усредненную точку большой яркой точкой
-                if 0 <= avg_x < w and 0 <= avg_y < h:
-                    cv2.circle(result_img, (int(avg_x), int(avg_y)), 8, (255, 255, 255), -1)
-                    cv2.circle(result_img, (int(avg_x), int(avg_y)), 10, (0, 255, 0), 2)
+                # Рисуем точки пересечения (если есть)
+                if intersections:
+                    f.write(f'\nВсего пересечений: {len(intersections)}\n')
+                    for x_int, y_int in intersections:
+                        if 0 <= x_int < w and 0 <= y_int < h:
+                            cv2.circle(result_img, (int(x_int), int(y_int)), 3, (128, 128, 128), -1)
             else:
-                f.write('\nТочек пересечения не найдено\n')
+                f.write('Линий не обнаружено\n')
         
         # Сохраняем результат - изображение только с прямыми
         output_path = os.path.join(hough_output_dir, f'{t:05d}_lines.jpg')
